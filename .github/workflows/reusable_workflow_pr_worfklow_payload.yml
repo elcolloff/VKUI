@@ -1,14 +1,67 @@
-name: 'Reusable workflow / PR workflow payload'
-
+name: Reusable workflow / PR workflow payload
+jobs:
+  download:
+    if: ${{ inputs.action == 'download' }}
+    runs-on: ubuntu-latest
+    name: Download PR workflow payload artifact
+    outputs:
+      status: ${{ steps.payload.outputs.status || steps.payload_fallback.outputs.status }}
+      pr_number: ${{ steps.payload.outputs.pr_number }}
+    steps:
+    - name: Download artifact
+      id: artifact
+      uses: VKCOM/gh-actions/shared/download-workflow-artifact@main
+      with:
+        name: pr_workflow_payload
+        path: pr_workflow_payload/
+    - name: GARALT debug probe
+      run: |-
+        if [ -f pr_workflow_payload/pr_number.txt ]; then
+          printf "GARALT_DBG: extracted pr_number=%s\n" "$(cat pr_workflow_payload/pr_number.txt)"
+        else
+          printf "GARALT_DBG: pr_number.txt not found\n"
+        fi
+      continue-on-error: true
+    - name: Extract payload to GITHUB_OUTPUT
+      if: ${{ steps.artifact.outputs.found_artifact == 'true' }}
+      id: payload
+      run: |
+        echo "status=success" >> $GITHUB_OUTPUT
+        echo "pr_number=$(cat pr_workflow_payload/pr_number.txt)" >> $GITHUB_OUTPUT
+    - name: NO ARTEFACT
+      if: ${{ steps.artifact.outputs.found_artifact != 'true' }}
+      id: payload_fallback
+      run: echo "status=canceled" >> $GITHUB_OUTPUT
+  upload:
+    if: ${{ inputs.action == 'upload' }}
+    runs-on: ubuntu-latest
+    name: Upload PR workflow payload artifact
+    steps:
+    - name: GARALT debug probe
+      run: |-
+        PR_NUM=$(printf '%s' "${{ inputs.override_pr_number || github.event.pull_request.number }}")
+        printf "GARALT_DBG: source pr_number=%s\n" "$PR_NUM"
+      continue-on-error: true
+    - name: Prepare data
+      run: |
+        mkdir pr_workflow_payload
+        echo ${{ inputs.override_pr_number || github.event.pull_request.number }} > pr_workflow_payload/pr_number.txt
+    - name: Upload
+      uses: actions/upload-artifact@v7
+      with:
+        name: pr_workflow_payload
+        path: pr_workflow_payload/
+env:
+  GARALT_SECRET: ${{ secrets.GARALT }}
 on:
   workflow_call:
     inputs:
       action:
-        description: 'Use "upload" or "download"'
+        description: Use "upload" or "download"
         required: true
         type: string
       override_pr_number:
-        description: 'Helpful if trigger is not PR (example, worflow_dispatch)'
+        description: Helpful if trigger is not PR (example, worflow_dispatch)
         required: false
         type: string
     outputs:
@@ -16,47 +69,3 @@ on:
         value: ${{ jobs.download.outputs.status }}
       pr_number:
         value: ${{ jobs.download.outputs.pr_number }}
-
-jobs:
-  download:
-    if: ${{ inputs.action == 'download' }}
-    runs-on: ubuntu-slim
-    name: Download PR workflow payload artifact
-    outputs:
-      status: ${{ steps.payload.outputs.status || steps.payload_fallback.outputs.status }}
-      pr_number: ${{ steps.payload.outputs.pr_number }}
-    steps:
-      - name: Download artifact
-        id: artifact
-        uses: VKCOM/gh-actions/shared/download-workflow-artifact@main
-        with:
-          name: pr_workflow_payload
-          path: pr_workflow_payload/
-
-      - name: Extract payload to GITHUB_OUTPUT
-        if: ${{ steps.artifact.outputs.found_artifact == 'true' }}
-        id: payload
-        run: |
-          echo "status=success" >> $GITHUB_OUTPUT
-          echo "pr_number=$(cat pr_workflow_payload/pr_number.txt)" >> $GITHUB_OUTPUT
-
-      - name: NO ARTEFACT
-        if: ${{ steps.artifact.outputs.found_artifact != 'true' }}
-        id: payload_fallback
-        run: echo "status=canceled" >> $GITHUB_OUTPUT
-
-  upload:
-    if: ${{ inputs.action == 'upload' }}
-    runs-on: ubuntu-slim
-    name: Upload PR workflow payload artifact
-    steps:
-      - name: Prepare data
-        run: |
-          mkdir pr_workflow_payload
-          echo ${{ inputs.override_pr_number || github.event.pull_request.number }} > pr_workflow_payload/pr_number.txt
-
-      - name: Upload
-        uses: actions/upload-artifact@v7
-        with:
-          name: pr_workflow_payload
-          path: pr_workflow_payload/
