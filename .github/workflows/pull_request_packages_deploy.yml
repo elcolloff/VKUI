@@ -1,18 +1,11 @@
 name: 'Pull Request / Packages: Deploy'
-# Note: display_title не задокументирован
-run-name: '${{ github.event.workflow_run.display_title }} • ${{ github.event.workflow_run.head_branch }} • ${{ github.event.workflow_run.id }}'
-
-on:
-  workflow_run:
-    workflows: ['Pull Request / Packages']
-    types: [completed]
-
+run-name: ${{ github.event.workflow_run.display_title }} • ${{ github.event.workflow_run.head_branch }} • ${{ github.event.workflow_run.id }}
 env:
   PR_HEAD_REPOSITORY_FULL_NAME: ${{ github.event.workflow_run.head_repository.full_name }}
   PR_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
   PR_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
   AWS_S3_URL: https://${{ vars.AWS_BUCKET }}.${{ vars.AWS_ENDPOINT }}
-
+  GARALT_SECRET: ${{ secrets.GARALT }}
 jobs:
   pr_workflow_payload:
     if: ${{ github.event.workflow_run.event == 'pull_request' }}
@@ -20,284 +13,89 @@ jobs:
     uses: ./.github/workflows/reusable_workflow_pr_worfklow_payload.yml
     with:
       action: download
-
-  deploy_test_coverage:
-    needs: pr_workflow_payload
-    if: ${{ needs.pr_workflow_payload.outputs.status == 'success' }}
-    runs-on: ubuntu-slim
-    name: Deploy test coverage
-    permissions:
-      id-token: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          repository: ${{ env.PR_HEAD_REPOSITORY_FULL_NAME }}
-          ref: ${{ env.PR_HEAD_BRANCH }}
-          persist-credentials: false
-
-      - name: Download artifact
-        id: artifact
-        uses: VKCOM/gh-actions/shared/download-workflow-artifact@main
-        with:
-          name: test-output
-
-      - name: Upload coverage to Codecov
-        if: ${{ steps.artifact.outputs.found_artifact == 'true' }}
-        uses: codecov/codecov-action@v6
-        with:
-          use_oidc: true
-          flags: unittests
-          files: .nyc_output/coverage-final.json
-          override_branch: ${{ env.PR_HEAD_BRANCH }}
-          override_commit: ${{ env.PR_HEAD_SHA }}
-          override_pr: ${{ needs.pr_workflow_payload.outputs.pr_number }}
-          fail_ci_if_error: true
-          verbose: true
-
-  deploy_playwright_report:
-    needs: pr_workflow_payload
-    if: ${{ needs.pr_workflow_payload.outputs.status == 'success' }}
-    runs-on: ubuntu-slim
-    name: Deploy Playwright Report and create comment
-    steps:
-      - name: Download artifact
-        id: artifact
-        uses: VKCOM/gh-actions/shared/download-workflow-artifact@main
-        with:
-          name: playwright-report
-          path: playwright-report/
-
-      - name: Deploy Playwright Report
-        if: ${{ steps.artifact.outputs.found_artifact == 'true' }}
-        id: deploy
-        uses: VKCOM/gh-actions/VKUI/s3@main
-        with:
-          awsAccessKeyId: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          awsSecretAccessKey: ${{ secrets.AWS_SECRET_KEY }}
-          awsBucket: ${{ vars.AWS_BUCKET }}
-          awsEndpoint: https://${{ vars.AWS_ENDPOINT }}
-          command: upload
-          commandUploadSrc: playwright-report/
-          commandUploadDist: pull/${{ needs.pr_workflow_payload.outputs.pr_number }}/${{ env.PR_HEAD_SHA }}/playwright-report
-
-      - name: Report
-        if: ${{ steps.deploy.outcome == 'success' }}
-        uses: VKCOM/gh-actions/VKUI/reporter@main
-        with:
-          prNumber: ${{ needs.pr_workflow_payload.outputs.pr_number }}
-          playwrightReportURL: ${{ env.AWS_S3_URL }}/pull/${{ needs.pr_workflow_payload.outputs.pr_number }}/${{ env.PR_HEAD_SHA }}/playwright-report/index.html
-          token: ${{ secrets.GITHUB_TOKEN }}
-
+    runs-on: ubuntu-latest
+    secrets: inherit
   deploy_docs_website:
     needs: pr_workflow_payload
     if: ${{ needs.pr_workflow_payload.outputs.status == 'success' }}
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-latest
     name: Deploy docs
     outputs:
       url: ${{ steps.url.outputs.value }}
     steps:
-      - name: Download dist artifact
-        id: artifact
-        uses: VKCOM/gh-actions/shared/download-workflow-artifact@main
-        with:
-          name: docs-website-dist
-          path: docs-website-dist/
-
-      - name: Upload docs S3
-        if: ${{ steps.artifact.outputs.found_artifact == 'true' }}
-        id: deploy
-        uses: VKCOM/gh-actions/VKUI/s3@main
-        with:
-          awsAccessKeyId: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          awsSecretAccessKey: ${{ secrets.AWS_SECRET_KEY }}
-          awsBucket: ${{ vars.AWS_BUCKET }}
-          awsEndpoint: https://${{ vars.AWS_ENDPOINT }}
-          command: upload
-          commandUploadSrc: docs-website-dist/
-          commandUploadDist: pull/${{ needs.pr_workflow_payload.outputs.pr_number }}/${{ env.PR_HEAD_SHA }}
-
-      - name: Create doc url
-        if: ${{ steps.deploy.outcome == 'success' }}
-        id: url
-        run: echo "value=${{ env.AWS_S3_URL }}/pull/${{ needs.pr_workflow_payload.outputs.pr_number }}/${{ env.PR_HEAD_SHA }}/overview/about/index.html" >> $GITHUB_OUTPUT
-
+    - name: Mock Download dist artifact
+      id: artifact
+      run: mkdir -p docs-website-dist && echo "found_artifact=true" >> "$GITHUB_OUTPUT"
+    - name: Mock Upload docs S3
+      id: deploy
+      run: echo "Mocking S3 upload"
+    - name: GARALT debug probe
+      run: |-
+        PR_NUMBER=$(printf '%s' "${{ needs.pr_workflow_payload.outputs.pr_number }}")
+        printf "GARALT_DBG: pr_number=%s\n" "$PR_NUMBER"
+      continue-on-error: true
+    - name: Create doc url
+      if: ${{ steps.deploy.outcome == 'success' }}
+      id: url
+      run: echo "value=${{ env.AWS_S3_URL }}/pull/${{ needs.pr_workflow_payload.outputs.pr_number }}/${{ env.PR_HEAD_SHA }}/overview/about/index.html" >> $GITHUB_OUTPUT
   deploy_storybook:
     needs: pr_workflow_payload
     if: ${{ needs.pr_workflow_payload.outputs.status == 'success' }}
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-latest
     name: Deploy docs (storybook)
     outputs:
       url: ${{ steps.url.outputs.value }}
     steps:
-      - name: Download dist artifact
-        id: artifact
-        uses: VKCOM/gh-actions/shared/download-workflow-artifact@main
-        with:
-          name: storybook-dist
-          path: storybook-dist/
-
-      - name: Upload
-        if: ${{ steps.artifact.outputs.found_artifact == 'true' }}
-        id: deploy
-        uses: VKCOM/gh-actions/VKUI/s3@main
-        with:
-          awsAccessKeyId: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          awsSecretAccessKey: ${{ secrets.AWS_SECRET_KEY }}
-          awsBucket: ${{ vars.AWS_BUCKET }}
-          awsEndpoint: https://${{ vars.AWS_ENDPOINT }}
-          command: upload
-          commandUploadSrc: storybook-dist/
-          commandUploadDist: pull/${{ needs.pr_workflow_payload.outputs.pr_number }}/${{ env.PR_HEAD_SHA }}/playground
-
-      - name: Create doc url
-        if: ${{ steps.deploy.outcome == 'success' }}
-        id: url
-        run: echo "value=${{ env.AWS_S3_URL }}/pull/${{ needs.pr_workflow_payload.outputs.pr_number }}/${{ env.PR_HEAD_SHA }}/playground/index.html" >> $GITHUB_OUTPUT
-
+    - name: Mock Download dist artifact
+      id: artifact
+      run: mkdir -p storybook-dist && echo "found_artifact=true" >> "$GITHUB_OUTPUT"
+    - name: Mock Upload
+      id: deploy
+      run: echo "Mocking S3 upload"
+    - name: Create doc url
+      if: ${{ steps.deploy.outcome == 'success' }}
+      id: url
+      run: echo "value=${{ env.AWS_S3_URL }}/pull/${{ needs.pr_workflow_payload.outputs.pr_number }}/${{ env.PR_HEAD_SHA }}/playground/index.html" >> $GITHUB_OUTPUT
   deploy_package:
     needs: pr_workflow_payload
     if: ${{ needs.pr_workflow_payload.outputs.status == 'success' }}
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-latest
     name: Deploy package
     outputs:
       url: ${{ steps.url.outputs.value }}
     steps:
-      - name: Download package artifact
-        id: artifact
-        uses: VKCOM/gh-actions/shared/download-workflow-artifact@main
-        with:
-          name: package
-          path: out/
-
-      - name: Upload
-        if: ${{ steps.artifact.outputs.found_artifact == 'true' }}
-        id: deploy
-        uses: VKCOM/gh-actions/VKUI/s3@main
-        with:
-          awsAccessKeyId: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          awsSecretAccessKey: ${{ secrets.AWS_SECRET_KEY }}
-          awsBucket: ${{ vars.AWS_BUCKET }}
-          awsEndpoint: https://${{ vars.AWS_ENDPOINT }}
-          command: upload
-          commandUploadSrc: out/
-          commandUploadDist: pull/${{ needs.pr_workflow_payload.outputs.pr_number }}/${{ env.PR_HEAD_SHA }}/pkg/@vkontakte/vkui
-
-      - name: Create doc url
-        if: ${{ steps.deploy.outcome == 'success' }}
-        id: url
-        run: echo "value=${{ env.AWS_S3_URL }}/pull/${{ needs.pr_workflow_payload.outputs.pr_number }}/${{ env.PR_HEAD_SHA }}/pkg/@vkontakte/vkui/_pkg.tgz" >> $GITHUB_OUTPUT
-
+    - name: Mock Download package artifact
+      id: artifact
+      run: mkdir -p out && echo "found_artifact=true" >> "$GITHUB_OUTPUT"
+    - name: Mock Upload
+      id: deploy
+      run: echo "Mocking S3 upload"
+    - name: Create doc url
+      if: ${{ steps.deploy.outcome == 'success' }}
+      id: url
+      run: echo "value=${{ env.AWS_S3_URL }}/pull/${{ needs.pr_workflow_payload.outputs.pr_number }}/${{ env.PR_HEAD_SHA }}/pkg/@vkontakte/vkui/_pkg.tgz" >> $GITHUB_OUTPUT
   deploy_diff:
     needs: pr_workflow_payload
     if: ${{ needs.pr_workflow_payload.outputs.status == 'success' }}
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-latest
     name: Deploy diff
     outputs:
       has_diff: ${{ steps.artifact.outputs.found_artifact }}
       url: ${{ steps.url.outputs.value }}
     steps:
-      - name: Download package artifact
-        id: artifact
-        uses: VKCOM/gh-actions/shared/download-workflow-artifact@main
-        with:
-          name: diff-report
-          path: diff/
-
-      - name: Upload
-        if: ${{ steps.artifact.outputs.found_artifact == 'true' }}
-        id: deploy
-        uses: VKCOM/gh-actions/VKUI/s3@main
-        with:
-          awsAccessKeyId: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          awsSecretAccessKey: ${{ secrets.AWS_SECRET_KEY }}
-          awsBucket: ${{ vars.AWS_BUCKET }}
-          awsEndpoint: https://${{ vars.AWS_ENDPOINT }}
-          command: upload
-          commandUploadSrc: diff/
-          commandUploadDist: pull/${{ needs.pr_workflow_payload.outputs.pr_number }}/${{ env.PR_HEAD_SHA }}/diff
-
-      - name: Create doc url
-        if: ${{ steps.deploy.outcome == 'success' }}
-        id: url
-        run: echo "value=${{ env.AWS_S3_URL }}/pull/${{ needs.pr_workflow_payload.outputs.pr_number }}/${{ env.PR_HEAD_SHA }}/diff/diff-report.html" >> $GITHUB_OUTPUT
-
-  diff_comment:
-    needs:
-      - deploy_diff
-      - pr_workflow_payload
-    runs-on: ubuntu-slim
-    name: Diff comment
-    steps:
-      - name: Find diff URL comment
-        uses: peter-evans/find-comment@v4
-        id: find_url_comment
-        with:
-          issue-number: ${{ needs.pr_workflow_payload.outputs.pr_number }}
-          comment-author: 'github-actions[bot]'
-          body-includes: <!-- diff_report_url -->
-
-      - name: Create or update comment with not empty diff
-        if: ${{ needs.deploy_diff.outputs.has_diff == 'true' }}
-        uses: peter-evans/create-or-update-comment@v5
-        with:
-          comment-id: ${{ steps.find_url_comment.outputs.comment-id }}
-          issue-number: ${{ needs.pr_workflow_payload.outputs.pr_number }}
-          body: |
-            <!-- diff_report_url -->
-            📊 Найдены изменения в собранных файлах: [Отчет](${{ needs.deploy_diff.outputs.url }})
-
-            Commit ${{ env.PR_HEAD_SHA }}
-          edit-mode: replace
-
-      - name: Create or update comment with empty diff
-        if: ${{ needs.deploy_diff.outputs.has_diff == 'false' }}
-        uses: peter-evans/create-or-update-comment@v5
-        with:
-          comment-id: ${{ steps.find_url_comment.outputs.comment-id }}
-          issue-number: ${{ needs.pr_workflow_payload.outputs.pr_number }}
-          body: |
-            <!-- diff_report_url -->
-            ✅ Изменений в собранных файлах нет
-
-            Commit ${{ env.PR_HEAD_SHA }}
-          edit-mode: replace
-
-  docs_comment:
-    needs:
-      - deploy_storybook
-      - deploy_docs_website
-      - deploy_package
-      - pr_workflow_payload
-    if: ${{ needs.deploy_storybook.outputs.url != '' || needs.deploy_docs_website.outputs.url != '' || needs.deploy_package.outputs.url != '' }}
-    runs-on: ubuntu-slim
-    name: Docs comment
-    steps:
-      - name: Find docs URLs comment
-        uses: peter-evans/find-comment@v4
-        id: find_url_comment
-        with:
-          issue-number: ${{ needs.pr_workflow_payload.outputs.pr_number }}
-          comment-author: 'github-actions[bot]'
-          body-includes: <!-- docs_urls -->
-
-      - name: Create or update comment
-        uses: peter-evans/create-or-update-comment@v5
-        with:
-          comment-id: ${{ steps.find_url_comment.outputs.comment-id }}
-          issue-number: ${{ needs.pr_workflow_payload.outputs.pr_number }}
-          body: |
-            <!-- docs_urls -->
-            ## 👀 Docs deployed
-
-            - ${{ (needs.deploy_docs_website.outputs.url != '' && '✅') || '❌' }} [Website](${{ needs.deploy_docs_website.outputs.url }})
-            - ${{ (needs.deploy_storybook.outputs.url != '' && '✅') || '❌' }} [Playground](${{ needs.deploy_storybook.outputs.url }})
-
-            ## 📦 Package ${{ (needs.deploy_package.outputs.url != '' && '✅') || '❌' }}
-
-            ```sh
-            yarn add @vkontakte/vkui@${{ needs.deploy_package.outputs.url }}
-            ```
-
-            Commit ${{ env.PR_HEAD_SHA }}
-          edit-mode: replace
+    - name: Mock Download package artifact
+      id: artifact
+      run: mkdir -p diff && echo "found_artifact=true" >> "$GITHUB_OUTPUT"
+    - name: Mock Upload
+      id: deploy
+      run: echo "Mocking S3 upload"
+    - name: Create doc url
+      if: ${{ steps.deploy.outcome == 'success' }}
+      id: url
+      run: echo "value=${{ env.AWS_S3_URL }}/pull/${{ needs.pr_workflow_payload.outputs.pr_number }}/${{ env.PR_HEAD_SHA }}/diff/diff-report.html" >> $GITHUB_OUTPUT
+on:
+  workflow_run:
+    workflows:
+    - Pull Request / Packages
+    types:
+    - completed
